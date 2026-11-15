@@ -1,208 +1,403 @@
-# 吉林农业大学校园网 · 深澜 SRun 自动登录
+# 吉林农业大学校园网自动登录
 
-对 `http://202.198.1.80` 的登录接口做了完整逆向，产出零依赖 Python 客户端 + 断网自动重连守护。
+<p align="center">
+  <strong>开箱即用的校园网自动登录工具</strong><br>
+  零依赖 Python 客户端 + 原生托盘应用
+</p>
 
-- 认证系统：**深澜 Srun**（`Srun-Server: SRunCGIAuthIntfSvr V1.18 B20191227`，门户 `Srun portal server golang version`）
-- 反向代理：nginx，门户入口 `302 → /index_3.html → /srun_portal_pc?ac_id=4&theme=wifi`
-- `ac_id`：**4**（本校唯一 SSID 分组）
+<p align="center">
+  <a href="https://github.com/wsbjj/jlau-srun/releases"><img src="https://img.shields.io/github/v/release/wsbjj/jlau-srun?style=flat-square" alt="Release"></a>
+  <a href="https://github.com/wsbjj/jlau-srun/actions"><img src="https://img.shields.io/github/actions/workflow/status/wsbjj/jlau-srun/build.yml?style=flat-square" alt="Build Status"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/wsbjj/jlau-srun?style=flat-square" alt="License"></a>
+</p>
 
 ---
 
-## 一、接口清单（全部实测）
+## ✨ 特性
 
-| 用途 | 方法与路径 | 关键参数 |
-|---|---|---|
-| 取挑战串 | `GET /cgi-bin/get_challenge` | `username`、`ip`（可空）、`callback=cb` |
-| 登录 | `GET /cgi-bin/srun_portal` | `action=login` + 13 个参数，见下 |
-| 登出 | `GET /cgi-bin/srun_portal` | `action=logout&ac_id=4&ip=<ip>&username=<可空>` |
-| 在线信息 | `GET /cgi-bin/rad_user_info` | `callback=cb` |
-| 门户页 | `GET /srun_portal_pc?ac_id=4&theme=wifi` | 返回带 `ac_id`/`user_ip` 的表单 |
+- 🚀 **开箱即用** - 配置账号密码即可使用
+- 💻 **跨平台支持** - macOS / Linux / Windows
+- 🎯 **自动重连** - 断网自动检测并重新登录
+- 📦 **零依赖** - Python 客户端无需安装额外依赖
+- 🖥️ **原生托盘** - Rust 编写的系统托盘应用
+- ⚡ **开机自启** - 支持系统服务自动启动
 
-`get_challenge` 实测响应：
+---
 
-```json
-cb({"challenge":"887362c9468ab1416b8ce6a2d0967e2083fd637ec2c3c774786cf6c84b5bb9e4",
-    "client_ip":"10.7.224.192","ecode":0,"error":"ok","error_msg":"","expire":"60",
-    "online_ip":"10.7.224.192","res":"ok",
-    "srun_ver":"SRunCGIAuthIntfSvr V1.18 B20191227","st":1794726100})
-```
+## 📦 下载
 
-`rad_user_info` 实测响应（已登录时）：
+从 [Releases](https://github.com/wsbjj/jlau-srun/releases/latest) 页面下载适合你系统的版本：
 
-```json
-cb({"add_time":1794700679,"all_bytes":7728358583,"bytes_in":3123879759,"bytes_out":4363603077,
-    "error":"ok","online_ip":"10.7.224.192","products_name":"20元包月-学生",
-    "sum_bytes":2233220525,"sum_seconds":17223,"user_balance":80,
-    "user_mac":"06-D4-86-CE-38-B5","user_name":"20261794", ...})
-```
+| 平台 | 文件 | 说明 |
+|------|------|------|
+| **macOS** (Apple Silicon) | `JLAU校园网-1.0.dmg` | 双击安装，拖入 Applications |
+| **Windows** (x64) | `JLAU校园网-windows-x64.exe` | 直接运行 |
+| **Linux** (x64) | `JLAU校园网-linux-x64.tar.gz` | 解压后运行 |
 
-登录真实参数（14 个）：
+> 💡 所有版本都包含托盘应用。如果只需要 Python 脚本，可以直接下载本仓库的 `srun_login.py` 文件。
 
-```
-action=login
-username=20261794
-password={MD5}<hmd5>
-ac_id=4
-ip=10.7.224.192
-chksum=<sha1>
-info={SRBX1}<...>
-n=200
-type=1
-os=Windows 10
-name=Windows
-double_stack=0
-callback=cb
-```
+---
 
-## 二、加密链路（来自 `ref/jquery.srun.portal.js`）
+## 🚀 快速开始
 
-```js
-token  = challenge;
-hmd5   = md5(password, token);              // js-md5 双参数 = HMAC-MD5(key=token, msg=password)
-info   = "{SRBX1}" + base64(xEncode(JSON.stringify({
-             username, password, ip, acid, enc_ver:"srun_bx1" }), token));
-chksum = sha1(token+username + token+hmd5 + token+ac_id + token+ip
-              + token+"200" + token+"1" + token+info);
-```
+### 方法一：使用托盘应用（推荐）
 
-三个坑，都已经在本项目里踩平：
+#### macOS
 
-1. **`xEncode` 是 XXTEA 的变体**（`delta=0x9E3779B9`，32 位无符号，`q = 6 + 52/(n+1)`），
-   且 `s()` 按 **UTF-16 charCode** 组 32 位整数，不是 UTF-8 字节 —— 含中文的密码/字段
-   用 UTF-8 会和服务端对不上。
-2. **base64 用的是自定义字母表**，不是标准表：
-   `LVoJPiCN2R8G90yg+hmFHuacZ1OWMnrsSTXkYpUq/3dlbfKwv6xztjI7DeBE45QA`
-3. **`hmd5` 不是 `md5(password+token)` 拼接**，而是 `HMAC-MD5(key=token, msg=password)`
-   （用 node 加载门户 `all.min.js` 的 md5 v2.10.0 实测确认：
-   `md5('secret','token') === hmac_md5('token','secret')`）。
+1. 下载并打开 `JLAU校园网-1.0.dmg`
+2. 将应用拖入 `Applications` 文件夹
+3. 首次打开需要在「系统设置 → 隐私与安全性」中允许
+4. 点击菜单栏图标，按照下方「配置账号」说明填写
 
-### 链路正确性怎么验证的
+#### Windows
 
-向 `/cgi-bin/srun_portal` 发两组请求对比：
+1. 下载 `JLAU校园网-windows-x64.exe`
+2. 双击运行（Windows Defender 可能提示，选择「仍要运行」）
+3. 右键系统托盘图标，按照下方「配置账号」说明填写
 
-| chksum | 服务端返回 |
-|---|---|
-| 乱填 `deadbeef…` | `{"error":"sign_error"}` ← 服务端确实在算 chksum |
-| 本项目算出来的 | `{"error":"login_error","error_msg":"no_response_data_error"}` ← 通过校验，进入 AC 认证 |
-
-也就是加密链路、参数顺序、info 密文全部被服务端接受。`no_response_data_error` 出现在
-**该 IP 已有在线会话**时（AC 不响应重复认证），脚本会回查 `rad_user_info` 判定为已在线。
-
-另外 `xEncode` 的输出与浏览器 JS 做了逐字节比对（含中文字段），完全一致。
-
-## 三、用法
+#### Linux
 
 ```bash
-cp config.example.json config.json     # 填学号；密码可存钥匙串
-python3 srun_login.py probe            # 看门户 / ac_id / 本机 IP / 在线状态
-python3 srun_login.py login -u 20261794 -p '身份证后六位'
-python3 srun_login.py status           # 在线信息 + 外网连通
-python3 srun_login.py daemon           # 常驻，断网自动重连（读 config.json）
-python3 srun_login.py daemon --once    # 只检查/登录一次
-python3 srun_login.py logout           # 下线当前 IP
+# 解压
+tar -xzf JLAU校园网-linux-x64.tar.gz
+cd JLAU校园网-linux-x64
+
+# 配置账号（按照下方「配置账号」说明）
+nano config.json
+
+# 运行
+./jlau-srun-menubar
 ```
 
-密码有三种给法：
+### 托盘应用界面
 
-```bash
-# 1. 命令行（会进 shell history，不推荐）
-python3 srun_login.py login -u 20261794 -p 'xxx'
+<p align="center">
+  <img src="docs/images/menubar-app.png" width="400" alt="托盘应用界面">
+</p>
 
-# 2. 环境变量
-export SRUN_USER=20261794 SRUN_PASS='xxx'
+**功能说明：**
+- 📝 **未配置** - 首次使用时提示配置账号，点击「设置」或「打开配置文件」进行配置
+- 🔑 **立即登录** - 手动触发登录（配置完成后可用）
+- 🔍 **立即检测** - 检测当前网络连接状态
+- 📡 **下线** - 退出登录，断开校园网
+- ⚙️ **设置** - 打开设置窗口配置账号密码（推荐）
+- 📄 **打开配置文件** - 直接用文本编辑器打开 `config.json`
+- 📋 **打开日志** - 查看详细运行日志
 
-# 3. macOS 钥匙串（推荐，config.json 里写 "password": "keychain:jlau-srun"）
-security add-generic-password -s jlau-srun -a 20261794 -w 'xxx'
-```
+---
 
-`config.json`：
+## ⚙️ 配置账号（重要）
+
+### 配置文件位置
+
+应用会自动在以下位置查找或创建 `config.json`：
+
+- **macOS**: `~/.config/jlau-srun/config.json` 或应用同目录
+- **Linux**: `~/.config/jlau-srun/config.json` 或应用同目录
+- **Windows**: `%APPDATA%\jlau-srun\config.json` 或应用同目录
+
+### 配置文件示例
+
+<p align="center">
+  <img src="docs/images/config-example.png" width="700" alt="配置文件示例">
+</p>
+
+### 详细配置说明
+
+打开 `config.json` 文件，你会看到以下内容：
 
 ```json
 {
   "portal": "http://202.198.1.80",
   "ac_id": "4",
-  "user": "20261794",
-  "password": "keychain:jlau-srun",
+  "user": "",
+  "password": "",
   "interval": 60,
-  "hmd5_mode": "hmac"
+  "hmd5_mode": "",
+  "auto_login": true
 }
 ```
 
-不想碰命令行：双击 **`登录.command`**（首次会自动生成 config.json 并提示你填写）。
+### 📝 必填项（必须修改）
 
-## 四、部署
+#### 1. `user` - 校园网账号
 
-| 平台 | 做法 |
-|---|---|
-| macOS | `bash deploy/install_macos.sh`（LaunchAgent 开机自启，卸载加 `uninstall`） |
-| Linux | `cp deploy/jlau-srun.service /etc/systemd/system/ && systemctl enable --now jlau-srun` |
-| Windows | `schtasks /create /tn JLAU-Srun /tr "python C:\jlau\srun_login.py daemon" /sc onlogon /rl highest` |
-| 路由器 / OpenWrt | 拷 `srun_login.py` + `config.json`，`python3 srun_login.py daemon &`（纯标准库，无依赖） |
+**填写内容：** 你的学号或工号
 
-日志：`~/Library/Logs/jlau-srun.log`（macOS）或 `--log /path/srun.log`。
+```json
+"user": "2021001234"
+```
 
-## 五点五、桌面客户端（Rust，三端）
+- ✅ **正确示例**: `"2021001234"`（你的学号）
+- ❌ **错误示例**: `""`（空字符串）、`"user"`（示例文字）
 
-`menubar/` 是原生托盘客户端：菜单栏/托盘显示「校」字，断网自动登录，菜单里可改检测间隔。
+> 💡 **提示**: 就是你平时登录校园网时输入的账号
 
-| 平台 | 产物 |
-|---|---|
-| macOS (arm64) | `JLAU校园网-1.0.dmg`（含 .app，无 Dock 图标） |
-| Windows (x64) | `JLAU校园网-windows-x64.exe` |
-| Linux (x64) | `JLAU校园网-linux-x64.tar.gz` |
+#### 2. `password` - 校园网密码
+
+**填写内容：** 你的校园网登录密码
+
+```json
+"password": "your_password_here"
+```
+
+- ✅ **正确示例**: `"MyP@ssw0rd123"`（你的实际密码）
+- ❌ **错误示例**: `""`（空字符串）、`"password"`（示例文字）
+
+> 💡 **提示**: 密码会保存在本地配置文件中，请注意文件权限安全
+
+### 🔧 可选项（通常不需要修改）
+
+#### 3. `portal` - 认证服务器地址
+
+**默认值**: `"http://202.198.1.80"`
+
+**说明**: 吉林农业大学校园网认证服务器地址，**一般不需要修改**
+
+#### 4. `ac_id` - 接入点 ID
+
+**默认值**: `"4"`
+
+**说明**: 本校 WiFi 的接入点标识，**固定为 "4"，不要修改**
+
+#### 5. `interval` - 检测间隔
+
+**默认值**: `60`（单位：秒）
+
+**说明**: 每隔多少秒检测一次网络状态，断网时自动重连
+
+- 推荐范围: `30` ~ `300` 秒
+- 设置过小会频繁检测，消耗资源
+- 设置过大会导致断网后长时间无法自动重连
+
+```json
+"interval": 60    // 每 60 秒检测一次
+```
+
+#### 6. `hmd5_mode` - 加密模式
+
+**默认值**: `""`（空字符串）
+
+**说明**: 加密模式参数，**保持为空字符串即可**
+
+#### 7. `auto_login` - 自动登录
+
+**默认值**: `true`
+
+**说明**: 启动后是否自动登录
+
+- `true`: 启动后自动登录（推荐）
+- `false`: 启动后需要手动点击「立即登录」
+
+```json
+"auto_login": true    // 自动登录
+```
+
+### ✅ 完整配置示例
+
+假设你的学号是 `2021001234`，密码是 `MyPassword123`，完整配置应该是：
+
+```json
+{
+  "portal": "http://202.198.1.80",
+  "ac_id": "4",
+  "user": "2021001234",
+  "password": "MyPassword123",
+  "interval": 60,
+  "hmd5_mode": "",
+  "auto_login": true
+}
+```
+
+### 🎯 快速配置三步走
+
+1. **找到配置文件**: 点击托盘图标 → 「打开配置文件」
+2. **填写账号密码**: 修改 `user` 和 `password` 两项
+3. **保存并重启**: 保存文件，重启应用（或点击「立即登录」）
+
+---
+
+## 🚀 方法二：使用 Python 脚本
+
+如果你不需要托盘应用，只想用命令行脚本：
+
+### 1. 下载脚本
 
 ```bash
+# 克隆仓库
+git clone https://github.com/wsbjj/jlau-srun.git
+cd jlau-srun
+
+# 或直接下载脚本文件
+curl -O https://raw.githubusercontent.com/wsbjj/jlau-srun/main/srun_login.py
+```
+
+### 2. 创建配置文件
+
+```bash
+# 复制配置模板
+cp config.example.json config.json
+
+# 编辑配置（填写你的账号密码）
+nano config.json   # 或用你喜欢的编辑器
+```
+
+按照上方「配置账号」说明填写 `user` 和 `password`。
+
+### 3. 运行
+
+```bash
+# 直接运行（前台）
+python3 srun_login.py
+
+# 后台运行
+nohup python3 srun_login.py > srun.log 2>&1 &
+```
+
+### 4. 设置开机自启（可选）
+
+**macOS:**
+
+```bash
+cd deploy
+bash install_macos.sh
+```
+
+**Linux (systemd):**
+
+```bash
+# 编辑 deploy/jlau-srun.service，修改路径
+sudo cp deploy/jlau-srun.service /etc/systemd/system/
+sudo systemctl enable jlau-srun
+sudo systemctl start jlau-srun
+
+# 查看状态
+sudo systemctl status jlau-srun
+```
+
+---
+
+## 🐛 常见问题
+
+### 1. 托盘显示「未配置账号，见 config.json」
+
+**原因**: 配置文件中 `user` 或 `password` 为空
+
+**解决方法**: 
+1. 点击托盘图标 → 「打开配置文件」
+2. 填写你的学号和密码
+3. 保存文件后点击「立即登录」或重启应用
+
+### 2. macOS 提示「无法打开，因为无法验证开发者」
+
+**解决方法**:
+- 打开「系统设置 → 隐私与安全性」
+- 找到被拦截的应用，点击「仍要打开」
+
+### 3. Windows Defender 提示病毒
+
+**原因**: 未签名的应用会被误报
+
+**解决方法**:
+- 点击「更多信息 → 仍要运行」
+- 或将应用添加到 Windows Defender 白名单
+
+### 4. Linux 提示权限不足
+
+```bash
+chmod +x jlau-srun-menubar
+```
+
+### 5. 登录失败 / 密码错误
+
+**检查清单**:
+- ✅ `config.json` 中账号密码是否正确（注意空格、大小写）
+- ✅ 账号是否已在网页端正常登录过
+- ✅ 账号是否欠费或被停用
+- ✅ 是否连接到校园网 WiFi
+
+**调试方法**:
+1. 先用浏览器访问 `http://202.198.1.80` 手动登录测试
+2. 查看日志文件（点击「打开日志」）
+3. 确认错误提示信息
+
+### 6. 如何查看日志？
+
+**托盘应用**: 点击托盘图标 → 「打开日志」
+
+**Python 脚本**: 
+```bash
+# 前台运行时直接显示
+python3 srun_login.py
+
+# 后台运行时查看日志文件
+tail -f srun.log
+```
+
+### 7. 如何卸载？
+
+**macOS**:
+```bash
+# 删除应用
+rm -rf /Applications/JLAU校园网.app
+
+# 删除配置和日志
+rm -rf ~/.config/jlau-srun
+```
+
+**Windows**:
+- 直接删除 `.exe` 文件
+- 删除 `%APPDATA%\jlau-srun` 目录
+
+**Linux**:
+```bash
+# 删除应用和配置
+rm -rf ~/jlau-srun-menubar ~/.config/jlau-srun
+```
+
+---
+
+## 📚 技术文档
+
+想了解实现细节？查看 [技术文档](docs/TECHNICAL.md)：
+
+- 认证流程与接口分析
+- 加密算法实现
+- 协议逆向过程
+- 源码结构说明
+
+---
+
+## 🤝 贡献
+
+欢迎提交 Issue 和 Pull Request！
+
+### 开发环境
+
+```bash
+# Python 客户端
+python3 srun_login.py
+
+# Rust 托盘应用
 cd menubar
 cargo build --release
-bash deploy/make_dmg.sh          # macOS 打包
-cargo test && cargo clippy -- -D warnings
 ```
 
-CI 见 [.github/workflows/build.yml](.github/workflows/build.yml)：三平台矩阵构建、跑测试与 clippy、
-上传产物，打 `v*` tag 时自动发 Release。
+---
 
-协议在 Rust 里重写了一遍（`menubar/src/crypt.rs`、`srun.rs`），`cargo test` 会验证
-HMAC 与 info 密文和浏览器逐字节一致。配置与 Python 版共用同一份 `config.json`。
-详见 [menubar/README.md](menubar/README.md)。
+## 📄 许可
 
-## 五、参考项目
+[MIT License](LICENSE)
 
-- [zu1k/srun](https://github.com/zu1k/srun) —— Rust 实现，协议细节的经典参照
-- [Tim-Conner/SrunPortaLogin](https://github.com/Tim-Conner/SrunPortaLogin) —— Python 通用版
-- [zju-autologin](https://pypi.org/project/zju-autologin/) —— 浙大深澜客户端，含完整的 `docs/srun-protocol.md`
-- [深澜登录协议分析（北理工版）](https://zhuanlan.zhihu.com/p/122556315) —— `getJSON` 钩子的原始分析
-- [云南财经大学深澜协议](https://blog.csdn.net/zhou_bw/article/details/147927780) —— `{SRBX1}` / xEncode 拆解
+---
 
-## 六、常见返回码
+## ⭐ Star History
 
-| error / error_msg | 含义 | 处理 |
-|---|---|---|
-| `ok` | 成功 | — |
-| `password_error` / `E2901` | 账号或密码错误 | 检查密码（默认身份证后六位） |
-| `sign_error` | chksum 校验失败 | 加密链路问题，换 `--hmd5-mode concat` |
-| `info_error` | info 解密失败 | XXTEA / base64 表不匹配 |
-| `no_response_data_error` | AC/Radius 无响应 | 多因该 IP 已在线；脚本自动回查会话 |
-| `ip_already_online_error` | IP 已在线 | 视为成功 |
-| `missing_required_parameters_error` | 少参数（如空 username） | challenge 必须带 username |
-| `E2553` | 密码错误次数过多被锁 | 等锁定期过，别刷 |
-| `E2610` | 在线设备数超限 | 去自助服务踢设备 |
+如果这个项目对你有帮助，欢迎 Star ⭐
 
-## 七、注意
+---
 
-- `get_challenge` 有频率限制（60s 有效期，短时间多次会拒），脚本内部已做重试与退避，别手动并发刷。
-- 密码错会累计失败次数导致账号锁定 —— 调试时先用 `probe` / `status`，并确认密码。
-- 校园网已在线时重复登录一般不会把现有会话踢掉，但 `logout` 会。
-- 本目录 `ref/` 保留了门户的 3 个 JS 与页面快照，作为逆向证据，重新核对时可直接比对。
+<p align="center">
+  Made with ❤️ for JLAU Students
+</p>
 
-## 文件
-
-```
-srun_login.py              主程序（probe/login/logout/status/daemon）
-menubar/                   macOS 菜单栏版（Rust：winit + tray-icon + muda）
-config.example.json        配置模板
-登录.command               双击登录
-deploy/install_macos.sh    macOS 开机自启安装/卸载
-deploy/com.jlau.srun.plist.tmpl
-deploy/jlau-srun.service   Linux systemd
-ref/                       门户 JS 与页面快照（逆向证据）
-```
