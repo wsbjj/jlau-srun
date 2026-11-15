@@ -1,10 +1,10 @@
 //! 深澜 SRun 认证客户端（吉林农业大学 http://202.198.1.80）
 
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde_json::Value;
 
-use crate::crypt::{build_chksum, build_info, hmac_md5_hex, md5_concat_hex};
+use crate::crypt::{build_chksum, build_info, hmac_md5_hex, md5_concat_hex, sha1_hex};
 
 const CGI: &str = "/cgi-bin";
 const UA: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 \
@@ -277,25 +277,109 @@ impl SrunClient {
     }
 
     pub fn logout(&self, username: &str) -> Result<String, String> {
-        let ip = self.online_info().map(|i| i.online_ip).unwrap_or_default();
+        let observed = self.online_info();
+        let online = observed.as_ref().is_some_and(|info| info.online);
+        let session_user = observed.as_ref().map(|info| info.user_name.clone()).unwrap_or_default();
+        let mut ip = observed.as_ref().map(|info| info.online_ip.clone()).unwrap_or_default();
+        let user = if session_user.is_empty() {
+            username.to_string()
+        } else {
+            session_user
+        };
+
+        // 本机计费会话在线时，门户 `srun_portal?action=logout` 会回
+        // `login_error` / `You are not online.`，但会话其实还在。
+        // 门户页对这种会话走 `/cgi-bin/rad_user_dm`。
+        if online {
+            if user.is_empty() || ip.is_empty() {
+                return Err("未取到在线账号或 IP，无法下线".into());
+            }
+            self.radius_dm(&user, &ip)?;
+            return Ok("已下线".into());
+        }
+
+        if ip.is_empty() && !user.is_empty()
+            && let Ok(challenge) = self.get_challenge(&user)
+        {
+            ip = challenge.client_ip;
+        }
+        if ip.is_empty() {
+            return Ok("当前已离线".into());
+        }
+        self.portal_logout(&user, &ip)?;
+        Ok("已下线".into())
+    }
+
+    /// Radius DM。签名与门户 `sha1(time + username + ip + unbind + time)` 一致，`unbind=0`。
+    fn radius_dm(&self, username: &str, ip: &str) -> Result<(), String> {
+        let time = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+        let unbind = "0";
         let body = self.get(
-            &format!("{CGI}/srun_portal"),
+            &format!("{CGI}/rad_user_dm"),
             &[
-                ("action", "logout".into()),
-                ("ac_id", self.ac_id.clone()),
-                ("ip", ip),
+                ("ip", ip.to_string()),
                 ("username", username.to_string()),
+                ("time", time.to_string()),
+                ("unbind", unbind.into()),
+                ("sign", dm_sign(time, username, ip, unbind)),
                 ("callback", "cb".into()),
             ],
         )?;
-        let v = parse_jsonp(&body)?;
-        let error = v.get("error").and_then(|x| x.as_str()).unwrap_or("").to_string();
-        if error.is_empty() || error == "ok" {
-            Ok("已下线".into())
-        } else {
-            Err(error_text(&error))
-        }
+        classify_logout_body(&body)
     }
+
+    fn portal_logout(&self, username: &str, ip: &str) -> Result<(), String> {
+        let mut query = vec![
+            ("action", "logout".to_string()),
+            ("ac_id", self.ac_id.clone()),
+            ("ip", ip.to_string()),
+        ];
+        if !username.is_empty() {
+            query.push(("username", username.to_string()));
+        }
+        query.push(("callback", "cb".to_string()));
+        let body = self.get(&format!("{CGI}/srun_portal"), &query)?;
+        classify_logout_body(&body)
+    }
+}
+
+/// 门户 `dm()` 的签名串：`sha1(time + username + ip + unbind + time)`。
+fn dm_sign(time: u64, username: &str, ip: &str, unbind: &str) -> String {
+    sha1_hex(&format!("{time}{username}{ip}{unbind}{time}"))
+}
+
+fn classify_logout_body(body: &str) -> Result<(), String> {
+    let v = parse_jsonp(body)?;
+    let error = v.get("error").and_then(|x| x.as_str()).unwrap_or("");
+    let error_msg = v.get("error_msg").and_then(|x| x.as_str()).unwrap_or("");
+    classify_logout(error, error_msg)
+}
+
+/// `logout_ok` 才是 DM 成功。失败时看 `error_msg`，避免把 `login_error` 显示成「登录失败」。
+fn classify_logout(error: &str, error_msg: &str) -> Result<(), String> {
+    if matches!(error, "" | "ok" | "logout_ok") {
+        Ok(())
+    } else {
+        Err(logout_failure_text(error, error_msg))
+    }
+}
+
+fn logout_failure_text(error: &str, error_msg: &str) -> String {
+    let msg = error_msg.trim().trim_end_matches('.');
+    if msg.eq_ignore_ascii_case("you are not online") {
+        return "当前不在线".into();
+    }
+    if !msg.is_empty() {
+        let mapped = error_text(msg);
+        if mapped.starts_with("未知错误") {
+            return msg.to_string();
+        }
+        return mapped;
+    }
+    if error == "login_error" {
+        return "门户拒绝下线".into();
+    }
+    error_text(error)
 }
 
 /// 外网连通性探测（多目标，任一成功即在线）
@@ -329,4 +413,28 @@ pub fn internet_ok(timeout_secs: u64) -> bool {
         }
     }
     false
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dm_sign_follows_portal_order() {
+        let time = 1_700_000_000_u64;
+        let expected = sha1_hex(&format!("{time}alice10.1.2.30{time}"));
+        assert_eq!(dm_sign(time, "alice", "10.1.2.3", "0"), expected);
+        let swapped = sha1_hex(&format!("{time}10.1.2.3alice0{time}"));
+        assert_ne!(dm_sign(time, "alice", "10.1.2.3", "0"), swapped);
+    }
+
+    #[test]
+    fn logout_ok_is_success_and_login_error_keeps_server_text() {
+        assert!(classify_logout("logout_ok", "").is_ok());
+        assert!(classify_logout("ok", "").is_ok());
+        let body = r#"cb({"error":"login_error","error_msg":"You are not online."})"#;
+        assert_eq!(classify_logout_body(body).unwrap_err(), "当前不在线");
+        assert_eq!(classify_logout("login_error", "").unwrap_err(), "门户拒绝下线");
+        assert_eq!(classify_logout("sign_error", "").unwrap_err(), "校验失败（加密链路不匹配）");
+    }
 }

@@ -94,6 +94,8 @@ fn reload_config(cfg: &mut Config, cfg_path: &mut Option<PathBuf>, client: &mut 
 fn run(mut cfg: Config, mut cfg_path: Option<PathBuf>, tx: Sender<Update>, rx: Receiver<Command>) {
     let mut client = SrunClient::new(&cfg.portal, &cfg.ac_id, 12);
     let mut next_check = Instant::now();
+    // 手动下线后暂停自动登录，直到用户点「立即登录」。
+    let mut hold_offline = false;
 
     loop {
         // 间隔每轮重算，菜单里改完立即生效
@@ -109,6 +111,7 @@ fn run(mut cfg: Config, mut cfg_path: Option<PathBuf>, tx: Sender<Update>, rx: R
                 continue;
             }
             Ok(Command::LoginNow) => {
+                hold_offline = false;
                 if !reload_config(&mut cfg, &mut cfg_path, &mut client, &tx) {
                     next_check = Instant::now() + interval;
                     continue;
@@ -124,7 +127,15 @@ fn run(mut cfg: Config, mut cfg_path: Option<PathBuf>, tx: Sender<Update>, rx: R
             }
             Ok(Command::Logout) => {
                 let msg = match client.logout(&cfg.user) {
-                    Ok(m) => Update::new(Status::Offline, m),
+                    Ok(m) => {
+                        hold_offline = true;
+                        let detail = if cfg.auto_login {
+                            format!("{m}，自动登录已暂停")
+                        } else {
+                            m
+                        };
+                        Update::new(Status::Offline, detail)
+                    }
                     Err(e) => Update::new(Status::Error, format!("下线失败: {e}")),
                 };
                 let _ = tx.send(msg);
@@ -157,6 +168,10 @@ fn run(mut cfg: Config, mut cfg_path: Option<PathBuf>, tx: Sender<Update>, rx: R
             continue;
         }
 
+        if hold_offline {
+            let _ = tx.send(Update::new(Status::Offline, "已下线，自动登录已暂停"));
+            continue;
+        }
         let _ = tx.send(Update::new(Status::Offline, "已断网"));
         if cfg.auto_login {
             do_login(&client, &cfg, &tx);

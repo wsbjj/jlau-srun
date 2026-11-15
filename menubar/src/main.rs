@@ -403,15 +403,15 @@ impl ApplicationHandler<UserEvent> for App {
         match event {
             UserEvent::Update(u) => {
                 let label = match u.status {
-                    Status::Online => "在线",
-                    Status::LoggedIn => "登录成功",
-                    Status::Offline => "离线",
-                    Status::Checking => "检测中",
-                    Status::LoggingIn => "登录中",
-                    Status::Error => "操作失败，请查看菜单中的提示",
-                    Status::Unconfigured => "未配置账号或密码",
+                    Status::Online => "在线".to_string(),
+                    Status::LoggedIn => "登录成功".to_string(),
+                    Status::Offline => "离线".to_string(),
+                    Status::Checking => "检测中".to_string(),
+                    Status::LoggingIn => "登录中".to_string(),
+                    Status::Error => u.detail.clone(),
+                    Status::Unconfigured => "未配置账号或密码".to_string(),
                 };
-                let _ = platform::log_status(label);
+                let _ = platform::log_status(&label);
                 if let Some(cfg) = u.config {
                     self.cfg = cfg;
                 }
