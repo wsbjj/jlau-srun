@@ -1,0 +1,15 @@
+[Unit]
+Description=JLAU campus network (SRun) auto login
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/jlau-srun
+ExecStart=/usr/bin/python3 /opt/jlau-srun/srun_login.py daemon --log /var/log/jlau-srun.log
+Restart=always
+RestartSec=30
+User=root
+
+[Install]
+WantedBy=multi-user.target

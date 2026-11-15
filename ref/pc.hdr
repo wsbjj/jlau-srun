@@ -1,0 +1,16 @@
+HTTP/1.1 200 OK
+Content-Length: 6226
+Access-Control-Allow-Credentials: true
+Access-Control-Allow-Headers: Origin,Authorization,Access-Control-Allow-Origin,Access-Control-Allow-Headers,Content-Type
+Access-Control-Allow-Methods: GET,POST
+Access-Control-Allow-Origin: *
+Access-Control-Expose-Headers: Content-Length,Access-Control-Allow-Origin,Access-Control-Allow-Headers,Content-Type
+Connection: keep-alive
+Content-Type: text/html; charset=utf-8
+Date: Sun, 15 Nov 2026 06:57:26 GMT
+Keep-Alive: timeout=4
+Proxy-Connection: keep-alive
+Server: 
+Set-Cookie: lang=zh-CN; Expires=Fri, 03 Dec 2094 10:11:33 UTC; Max-Age=2147483647; Path=/
+Srunflag: SRun portal server golang version
+

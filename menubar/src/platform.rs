@@ -1,0 +1,230 @@
+//! 平台相关实现：主目录、打开文件、数值输入框、日志路径、凭据存取。
+//!
+//! 三端（macOS / Windows / Linux）各自走原生方式，其余平台降级为可用即可。
+
+#![allow(unused_variables)]
+
+use std::path::{Path, PathBuf};
+use std::process::Command;
+
+// ---------------------------------------------------------------------------
+// 主目录
+// ---------------------------------------------------------------------------
+pub fn home_dir() -> Option<PathBuf> {
+    std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(PathBuf::from)
+}
+
+// ---------------------------------------------------------------------------
+// 用系统默认程序打开文本文件
+// ---------------------------------------------------------------------------
+pub fn open_text_file(path: &Path) {
+    #[cfg(target_os = "macos")]
+    {
+        let _ = Command::new("open").arg("-t").arg(path).spawn();
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let _ = Command::new("notepad").arg(path).spawn();
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        if Command::new("xdg-open").arg(path).spawn().is_err() {
+            let _ = Command::new("gedit").arg(path).spawn();
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 数值输入框（自定义检测间隔）
+// ---------------------------------------------------------------------------
+#[cfg(target_os = "macos")]
+pub fn prompt_number(title: &str, prompt: &str, default: u64) -> Option<u64> {
+    let script = format!(
+        "text returned of (display dialog \"{prompt}\" default answer \"{default}\" \
+         with title \"{title}\" buttons {{\"取消\", \"保存\"}} default button \"保存\")"
+    );
+    let out = Command::new("osascript").arg("-e").arg(script).output().ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    String::from_utf8_lossy(&out.stdout).trim().parse().ok()
+}
+
+#[cfg(target_os = "windows")]
+pub fn prompt_number(title: &str, prompt: &str, default: u64) -> Option<u64> {
+    let script = format!(
+        "Add-Type -AssemblyName Microsoft.VisualBasic; \
+         $v=[Microsoft.VisualBasic.Interaction]::InputBox('{prompt}','{title}','{default}'); \
+         if($v){{Write-Output $v}}"
+    );
+    let out = Command::new("powershell")
+        .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    String::from_utf8_lossy(&out.stdout).trim().parse().ok()
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+pub fn prompt_number(title: &str, prompt: &str, default: u64) -> Option<u64> {
+    let def = default.to_string();
+
+    // zenity（GNOME）
+    if let Ok(out) = Command::new("zenity")
+        .args([
+            "--entry",
+            "--title",
+            title,
+            "--text",
+            prompt,
+            "--entry-text",
+            &def,
+        ])
+        .output()
+        && out.status.success()
+        && let Ok(v) = String::from_utf8_lossy(&out.stdout).trim().parse()
+    {
+        return Some(v);
+    }
+
+    // kdialog（KDE）
+    if let Ok(out) = Command::new("kdialog")
+        .args(["--title", title, "--inputbox", prompt, &def])
+        .output()
+        && out.status.success()
+        && let Ok(v) = String::from_utf8_lossy(&out.stdout).trim().parse()
+    {
+        return Some(v);
+    }
+
+    eprintln!("需要 zenity 或 kdialog 才能弹输入框；也可直接改配置文件或用 set-interval 命令");
+    None
+}
+
+// ---------------------------------------------------------------------------
+// 日志路径
+// ---------------------------------------------------------------------------
+pub fn log_path() -> PathBuf {
+    #[cfg(target_os = "macos")]
+    {
+        if let Some(h) = home_dir() {
+            return h.join("Library/Logs/jlau-srun.log");
+        }
+    }
+    #[cfg(target_os = "windows")]
+    {
+        if let Some(d) = std::env::var_os("LOCALAPPDATA") {
+            return PathBuf::from(d).join("JLAUSrun/logs/jlau-srun.log");
+        }
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        if let Some(h) = home_dir() {
+            return h.join(".local/state/jlau-srun/jlau-srun.log");
+        }
+    }
+    PathBuf::from("jlau-srun.log")
+}
+
+// ---------------------------------------------------------------------------
+// 凭据（"keychain:服务名" 语法）
+// ---------------------------------------------------------------------------
+#[cfg(target_os = "macos")]
+pub fn credential_read(service: &str, account: &str) -> Option<String> {
+    let mut cmd = Command::new("security");
+    cmd.args(["find-generic-password", "-s", service, "-w"]);
+    if !account.is_empty() {
+        cmd.args(["-a", account]);
+    }
+    let out = cmd.output().ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let pwd = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if pwd.is_empty() { None } else { Some(pwd) }
+}
+
+#[cfg(target_os = "macos")]
+pub fn credential_save(service: &str, account: &str, password: &str) -> Result<(), String> {
+    let _ = Command::new("security")
+        .args(["delete-generic-password", "-s", service, "-a", account])
+        .output();
+    let out = Command::new("security")
+        .args([
+            "add-generic-password",
+            "-s",
+            service,
+            "-a",
+            account,
+            "-w",
+            password,
+            "-U",
+        ])
+        .output()
+        .map_err(|e| e.to_string())?;
+    if out.status.success() {
+        Ok(())
+    } else {
+        Err(String::from_utf8_lossy(&out.stderr).trim().to_string())
+    }
+}
+
+#[cfg(target_os = "linux")]
+pub fn credential_read(service: &str, account: &str) -> Option<String> {
+    // libsecret / GNOME Keyring
+    let out = Command::new("secret-tool")
+        .args(["lookup", "service", service, "account", account])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let pwd = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if pwd.is_empty() { None } else { Some(pwd) }
+}
+
+#[cfg(target_os = "linux")]
+pub fn credential_save(service: &str, account: &str, password: &str) -> Result<(), String> {
+    use std::io::Write;
+    let mut child = Command::new("secret-tool")
+        .args([
+            "store",
+            "--label",
+            service,
+            "service",
+            service,
+            "account",
+            account,
+        ])
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("secret-tool 不可用: {e}"))?;
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin
+            .write_all(password.as_bytes())
+            .map_err(|e| e.to_string())?;
+    }
+    let status = child.wait().map_err(|e| e.to_string())?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err("secret-tool 返回失败".into())
+    }
+}
+
+#[cfg(target_os = "windows")]
+pub fn credential_read(service: &str, account: &str) -> Option<String> {
+    // Windows 凭据管理器：cmdkey 只能存不能读，这里不做支持
+    let _ = (service, account);
+    None
+}
+
+#[cfg(target_os = "windows")]
+pub fn credential_save(service: &str, account: &str, password: &str) -> Result<(), String> {
+    let _ = (service, account, password);
+    Err("Windows 端暂不支持写入系统凭据，请把密码写进 config.json 或用环境变量 SRUN_PASS".into())
+}
