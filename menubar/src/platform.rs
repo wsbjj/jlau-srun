@@ -141,7 +141,7 @@ pub fn log_status(message: &str) -> std::io::Result<()> {
         std::fs::create_dir_all(dir)?;
     }
     let mut file = std::fs::OpenOptions::new().create(true).append(true).open(path)?;
-    let timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S %:z");
+    let timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S");
     writeln!(file, "[{timestamp}] {message}")
 }
 
