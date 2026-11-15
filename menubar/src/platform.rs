@@ -19,21 +19,23 @@ pub fn home_dir() -> Option<PathBuf> {
 // ---------------------------------------------------------------------------
 // 用系统默认程序打开文本文件
 // ---------------------------------------------------------------------------
-pub fn open_text_file(path: &Path) {
+pub fn open_text_file(path: &Path) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
-        let _ = Command::new("open").arg("-t").arg(path).spawn();
+        let status = Command::new("open").arg("-t").arg(path).status().map_err(|e| e.to_string())?;
+        if !status.success() { return Err(format!("系统打开文件失败: {status}")); }
     }
     #[cfg(target_os = "windows")]
     {
-        let _ = Command::new("notepad").arg(path).spawn();
+        Command::new("notepad").arg(path).spawn().map_err(|e| e.to_string())?;
     }
     #[cfg(all(unix, not(target_os = "macos")))]
     {
         if Command::new("xdg-open").arg(path).spawn().is_err() {
-            let _ = Command::new("gedit").arg(path).spawn();
+            Command::new("gedit").arg(path).spawn().map_err(|e| e.to_string())?;
         }
     }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -128,6 +130,19 @@ pub fn log_path() -> PathBuf {
         }
     }
     PathBuf::from("jlau-srun.log")
+}
+
+/// 追加不含账号、密码或认证参数的运行状态。
+pub fn log_status(message: &str) -> std::io::Result<()> {
+    use std::io::Write;
+
+    let path = log_path();
+    if let Some(dir) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+        std::fs::create_dir_all(dir)?;
+    }
+    let mut file = std::fs::OpenOptions::new().create(true).append(true).open(path)?;
+    let timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S %:z");
+    writeln!(file, "[{timestamp}] {message}")
 }
 
 // ---------------------------------------------------------------------------

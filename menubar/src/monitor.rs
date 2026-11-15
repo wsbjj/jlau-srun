@@ -40,6 +40,7 @@ pub struct Update {
     pub info: Option<OnlineInfo>,
     pub checked_at: Option<Instant>,
     pub config_path: Option<PathBuf>,
+    pub config: Option<Config>,
 }
 
 impl Update {
@@ -50,6 +51,7 @@ impl Update {
             info: None,
             checked_at: Some(Instant::now()),
             config_path: None,
+            config: None,
         }
     }
 }
@@ -61,7 +63,35 @@ pub fn spawn(cfg: Config, cfg_path: Option<PathBuf>, tx: Sender<Update>, rx: Rec
         .expect("启动监控线程失败");
 }
 
-fn run(mut cfg: Config, cfg_path: Option<PathBuf>, tx: Sender<Update>, rx: Receiver<Command>) {
+fn reload_config(cfg: &mut Config, cfg_path: &mut Option<PathBuf>, client: &mut SrunClient, tx: &Sender<Update>) -> bool {
+    let source = cfg_path.clone().filter(|p| p.exists()).or_else(Config::locate);
+    if let Some(path) = source {
+        match Config::load(&path) {
+            Ok(fresh) => {
+                let changed = *cfg != fresh || cfg_path.as_ref() != Some(&path);
+                if fresh.portal != cfg.portal || fresh.ac_id != cfg.ac_id {
+                    *client = SrunClient::new(&fresh.portal, &fresh.ac_id, 12);
+                }
+                *cfg = fresh;
+                *cfg_path = Some(path.clone());
+                if changed {
+                    let mut update = Update::new(Status::Checking, "配置已读取");
+                    update.config = Some(cfg.clone());
+                    update.config_path = Some(path);
+                    let _ = tx.send(update);
+                }
+            }
+            Err(_) => {
+                let _ = crate::platform::log_status("读取配置失败，请检查 JSON 格式和文件权限");
+                let _ = tx.send(Update::new(Status::Error, "配置读取失败，请检查 JSON 格式和文件权限"));
+                return false;
+            }
+        }
+    }
+    true
+}
+
+fn run(mut cfg: Config, mut cfg_path: Option<PathBuf>, tx: Sender<Update>, rx: Receiver<Command>) {
     let mut client = SrunClient::new(&cfg.portal, &cfg.ac_id, 12);
     let mut next_check = Instant::now();
 
@@ -79,6 +109,10 @@ fn run(mut cfg: Config, cfg_path: Option<PathBuf>, tx: Sender<Update>, rx: Recei
                 continue;
             }
             Ok(Command::LoginNow) => {
+                if !reload_config(&mut cfg, &mut cfg_path, &mut client, &tx) {
+                    next_check = Instant::now() + interval;
+                    continue;
+                }
                 if !configured(&cfg) {
                     let _ = tx.send(Update::new(Status::Unconfigured, "未配置账号，见 config.json"));
                     next_check = Instant::now() + interval;
@@ -103,22 +137,14 @@ fn run(mut cfg: Config, cfg_path: Option<PathBuf>, tx: Sender<Update>, rx: Recei
 
         next_check = Instant::now() + interval;
 
+        if !reload_config(&mut cfg, &mut cfg_path, &mut client, &tx) {
+            continue;
+        }
         if !configured(&cfg) {
             let mut u = Update::new(Status::Unconfigured, "未配置账号，见 config.json");
             u.config_path = cfg_path.clone();
             let _ = tx.send(u);
             continue;
-        }
-
-        // 配置热重载：优先用启动时的路径，找不到就重新定位
-        let reload_from = cfg_path.clone().filter(|p| p.exists()).or_else(Config::locate);
-        if let Some(p) = reload_from
-            && let Ok(fresh) = Config::load(&p)
-        {
-            if fresh.portal != cfg.portal || fresh.ac_id != cfg.ac_id {
-                client = SrunClient::new(&fresh.portal, &fresh.ac_id, 12);
-            }
-            cfg = fresh;
         }
 
         let _ = tx.send(Update::new(Status::Checking, "正在检测网络…"));
@@ -164,5 +190,34 @@ fn do_login(client: &SrunClient, cfg: &Config, tx: &Sender<Update>) {
         Err(e) => {
             let _ = tx.send(Update::new(Status::Error, format!("❌ 登录失败: {e}")));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::mpsc;
+
+    #[test]
+    fn reloads_configuration_after_starting_unconfigured() {
+        let dir = std::env::temp_dir().join(format!("jlau-config-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.json");
+        let mut cfg = Config::default();
+        cfg.save(&path).unwrap();
+        let mut source = Some(path.clone());
+        let mut client = SrunClient::new(&cfg.portal, &cfg.ac_id, 12);
+        let (tx, rx) = mpsc::channel();
+        let mut saved = cfg.clone();
+        saved.user = "test-user".into();
+        saved.password = "test-password".into();
+        saved.save(&path).unwrap();
+
+        assert!(reload_config(&mut cfg, &mut source, &mut client, &tx));
+        assert!(configured(&cfg));
+        let update = rx.try_recv().unwrap();
+        assert_eq!(update.config.unwrap().user, "test-user");
+        assert_eq!(update.config_path, Some(path));
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }

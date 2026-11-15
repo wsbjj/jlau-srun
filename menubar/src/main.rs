@@ -278,10 +278,29 @@ impl App {
             ID_TOGGLE_AUTO => self.toggle_auto_login(),
             ID_CONFIG => {
                 let path = self.cfg_path.clone().unwrap_or_else(Config::default_path);
-                platform::open_text_file(&path);
+                if !path.exists() {
+                    if let Err(e) = self.cfg.save(&path) {
+                        self.detail = format!("创建配置失败: {e}");
+                        self.refresh(true);
+                        return;
+                    }
+                    self.cfg_path = Some(path.clone());
+                }
+                if let Err(e) = platform::open_text_file(&path) {
+                    self.detail = format!("打开配置失败: {e}");
+                    self.refresh(true);
+                }
             }
             ID_LOG => {
-                platform::open_text_file(&platform::log_path());
+                if let Err(e) = platform::log_status("打开日志") {
+                    self.detail = format!("日志文件不可用: {e}");
+                    self.refresh(true);
+                    return;
+                }
+                if let Err(e) = platform::open_text_file(&platform::log_path()) {
+                    self.detail = format!("打开日志失败: {e}");
+                    self.refresh(true);
+                }
             }
             ID_QUIT => {
                 let _ = self.cmd_tx.send(Command::Quit);
@@ -316,11 +335,25 @@ impl ApplicationHandler<UserEvent> for App {
     fn user_event(&mut self, _event_loop: &ActiveEventLoop, event: UserEvent) {
         match event {
             UserEvent::Update(u) => {
+                let label = match u.status {
+                    Status::Online => "在线",
+                    Status::LoggedIn => "登录成功",
+                    Status::Offline => "离线",
+                    Status::Checking => "检测中",
+                    Status::LoggingIn => "登录中",
+                    Status::Error => "操作失败，请查看菜单中的提示",
+                    Status::Unconfigured => "未配置账号或密码",
+                };
+                let _ = platform::log_status(label);
+                if let Some(cfg) = u.config {
+                    self.cfg = cfg;
+                }
+                if let Some(path) = u.config_path {
+                    self.cfg_path = Some(path);
+                }
                 self.status = u.status;
                 self.detail = u.detail;
-                if u.info.is_some() {
-                    self.info = u.info;
-                }
+                self.info = u.info;
                 self.last_check = u.checked_at;
                 self.refresh(false);
             }
@@ -482,6 +515,7 @@ fn main() {
     if cli_mode(&args) {
         return;
     }
+    let _ = platform::log_status("程序启动");
 
     let (cfg, cfg_path) = Config::load_or_default();
 

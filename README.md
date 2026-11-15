@@ -1,5 +1,10 @@
 # 吉林农业大学校园网自动登录
 
+> [!IMPORTANT]
+> **免责声明**  
+> 本项目仅供学习交流使用，请勿用于商业用途。使用本工具产生的一切后果由使用者自行承担。  
+> 请遵守学校相关网络使用规定，合理使用校园网络资源。
+
 <p align="center">
   <strong>开箱即用的校园网自动登录工具</strong><br>
   零依赖 Python 客户端 + 原生托盘应用
@@ -400,4 +405,5 @@ cargo build --release
 <p align="center">
   Made with ❤️ for JLAU Students
 </p>
+
 
