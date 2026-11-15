@@ -35,9 +35,9 @@
 
 | 平台 | 文件 | 说明 |
 |------|------|------|
-| **macOS** (Apple Silicon) | `JLAU校园网-1.0.2.dmg` | 双击安装，拖入 Applications |
-| **Windows** (x64) | `JLAU校园网-1.0.2-windows-x64.exe` | 直接运行 |
-| **Linux** (x64) | `JLAU校园网-1.0.2-linux-x64.tar.gz` | 解压后运行 |
+| **macOS** (Apple Silicon) | `JLAU校园网-1.0.3.dmg` | 双击安装，拖入 Applications |
+| **Windows** (x64) | `JLAU校园网-1.0.3-windows-x64.exe` | 直接运行 |
+| **Linux** (x64) | `JLAU校园网-1.0.3-linux-x64.tar.gz` | 解压后运行 |
 
 > 💡 所有版本都包含托盘应用。如果只需要 Python 脚本，可以直接下载本仓库的 `srun_login.py` 文件。
 
@@ -49,14 +49,14 @@
 
 #### macOS
 
-1. 下载并打开 `JLAU校园网-1.0.2.dmg`
+1. 下载并打开 `JLAU校园网-1.0.3.dmg`
 2. 将应用拖入 `Applications` 文件夹
 3. 首次打开需要在「系统设置 → 隐私与安全性」中允许
 4. 点击菜单栏图标，按照下方「配置账号」说明填写
 
 #### Windows
 
-1. 下载 `JLAU校园网-1.0.2-windows-x64.exe`
+1. 下载 `JLAU校园网-1.0.3-windows-x64.exe`
 2. 双击运行（Windows Defender 可能提示，选择「仍要运行」）
 3. 右键系统托盘图标，按照下方「配置账号」说明填写
 
@@ -64,7 +64,7 @@
 
 ```bash
 # 解压
-tar -xzf JLAU校园网-1.0.2-linux-x64.tar.gz
+tar -xzf JLAU校园网-1.0.3-linux-x64.tar.gz
 cd JLAU校园网-linux-x64
 
 # 配置账号（按照下方「配置账号」说明）
