@@ -3,6 +3,11 @@ name: Build
 on:
   push:
     branches: [main, master]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'LICENSE'
+      - '.gitignore'
     tags: ['v*']
   pull_request:
   workflow_dispatch:
@@ -14,8 +19,34 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  check:
+    name: Check & Test
+    if: "!startsWith(github.ref, 'refs/tags/v')"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: 缓存
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: menubar
+
+      - name: Clippy
+        working-directory: menubar
+        run: cargo clippy --release -- -D warnings
+
+      - name: 单元测试
+        working-directory: menubar
+        run: cargo test --release
+
   build:
     name: Build (${{ matrix.name }})
+    if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -56,7 +87,7 @@ jobs:
 
       - name: Clippy
         working-directory: menubar
-        run: cargo clippy --release -- -D warnings
+        run: cargo clippy --all-targets --all-features -- -D warnings
 
       - name: 单元测试
         working-directory: menubar
@@ -122,3 +153,4 @@ jobs:
             artifacts/**/*.exe
             artifacts/**/*.tar.gz
             artifacts/**/config.example.json
+
