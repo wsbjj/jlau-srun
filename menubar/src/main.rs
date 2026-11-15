@@ -46,7 +46,8 @@ const PRESETS: [u64; 5] = [10, 30, 60, 120, 300];
 // ---------------------------------------------------------------------------
 #[derive(Debug, Clone)]
 enum UserEvent {
-    Update(Update),
+    // Update 含配置和在线信息，直接放进枚举会把每个事件都撑到数百字节。
+    Update(Box<Update>),
     Menu(String),
 }
 
@@ -539,7 +540,7 @@ fn main() {
     let fwd_proxy = proxy.clone();
     std::thread::spawn(move || {
         while let Ok(u) = update_rx.recv() {
-            if fwd_proxy.send_event(UserEvent::Update(u)).is_err() {
+            if fwd_proxy.send_event(UserEvent::Update(Box::new(u))).is_err() {
                 break;
             }
         }
