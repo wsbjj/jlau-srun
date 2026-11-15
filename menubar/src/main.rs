@@ -11,6 +11,7 @@ mod crypt;
 mod monitor;
 mod platform;
 mod srun;
+mod update;
 
 use std::io::Write;
 use std::path::PathBuf;
@@ -21,7 +22,7 @@ use muda::{CheckMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu
 use tray_icon::{TrayIcon, TrayIconBuilder};
 use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
-use winit::event_loop::{ActiveEventLoop, EventLoop};
+use winit::event_loop::{ActiveEventLoop, EventLoop, EventLoopProxy};
 use winit::window::WindowId;
 
 use config::Config;
@@ -35,7 +36,9 @@ const ID_CHECK: &str = "check";
 const ID_LOGOUT: &str = "logout";
 const ID_CONFIG: &str = "config";
 const ID_LOG: &str = "log";
+const ID_UPDATE: &str = "update";
 const ID_QUIT: &str = "quit";
+const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 const ID_TOGGLE_AUTO: &str = "toggle_auto";
 const ID_INTERVAL_CUSTOM: &str = "interval_custom";
 const INTERVAL_PREFIX: &str = "interval_";
@@ -49,6 +52,7 @@ enum UserEvent {
     // Update 含配置和在线信息，直接放进枚举会把每个事件都撑到数百字节。
     Update(Box<Update>),
     Menu(String),
+    UpdateChecked(Box<update::UpdateReport>),
 }
 
 // ---------------------------------------------------------------------------
@@ -63,12 +67,16 @@ struct App {
     info: Option<OnlineInfo>,
     last_check: Option<Instant>,
     cmd_tx: Sender<Command>,
+    proxy: EventLoopProxy<UserEvent>,
+    /// 已发现、比当前安装更新的版本号。
+    newer_version: Option<String>,
+    checking_update: bool,
     /// 上次渲染的指纹，避免菜单无谓重建
     rendered: String,
 }
 
 impl App {
-    fn new(cfg: Config, cfg_path: Option<PathBuf>, cmd_tx: Sender<Command>) -> Self {
+    fn new(cfg: Config, cfg_path: Option<PathBuf>, cmd_tx: Sender<Command>, proxy: EventLoopProxy<UserEvent>) -> Self {
         Self {
             tray: None,
             cfg,
@@ -78,6 +86,9 @@ impl App {
             info: None,
             last_check: None,
             cmd_tx,
+            proxy,
+            newer_version: None,
+            checking_update: false,
             rendered: String::new(),
         }
     }
@@ -100,7 +111,7 @@ impl App {
     }
 
     fn tooltip(&self) -> String {
-        format!("JLAU 校园网 · {}\n{}", self.status_line(), self.detail)
+        format!("JLAU 校园网 {APP_VERSION} · {}\n{}", self.status_line(), self.detail)
     }
 
     fn build_menu(&self) -> Menu {
@@ -185,6 +196,16 @@ impl App {
         let _ = menu.append_items(&[&cfg_item, &log_item]);
 
         let _ = menu.append(&PredefinedMenuItem::separator());
+        let version_label = match &self.newer_version {
+            Some(version) => format!("版本 {APP_VERSION} · 可更新到 {version}"),
+            None => format!("版本 {APP_VERSION}"),
+        };
+        let version = MenuItem::new(version_label, false, None);
+        let update_label = if self.checking_update { "正在检查更新…" } else { "检查更新" };
+        let update = MenuItem::with_id(ID_UPDATE, update_label, !self.checking_update, None);
+        let _ = menu.append_items(&[&version, &update]);
+
+        let _ = menu.append(&PredefinedMenuItem::separator());
         let quit = MenuItem::with_id(ID_QUIT, "退出", true, None);
         let _ = menu.append(&quit);
 
@@ -193,12 +214,14 @@ impl App {
 
     fn refresh(&mut self, force: bool) {
         let fingerprint = format!(
-            "{:?}|{}|{}|{}|{}|{}",
+            "{:?}|{}|{}|{}|{}|{}|{}|{}",
             self.status,
             self.detail,
             self.cfg.user,
             self.cfg.interval,
             self.cfg.auto_login,
+            self.newer_version.as_deref().unwrap_or(""),
+            self.checking_update,
             self.info
                 .as_ref()
                 .map(|i| format!("{}|{}|{}", i.online, i.sum_seconds, i.product))
@@ -303,11 +326,54 @@ impl App {
                     self.refresh(true);
                 }
             }
+            ID_UPDATE => self.check_for_update(),
             ID_QUIT => {
                 let _ = self.cmd_tx.send(Command::Quit);
                 std::process::exit(0);
             }
             _ => {}
+        }
+    }
+
+    fn check_for_update(&mut self) {
+        if self.checking_update {
+            return;
+        }
+        self.checking_update = true;
+        self.detail = "正在检查更新…".into();
+        self.refresh(true);
+        let proxy = self.proxy.clone();
+        if std::thread::Builder::new()
+            .name("jlau-update".into())
+            .spawn(move || {
+                let report = update::check(APP_VERSION);
+                let _ = proxy.send_event(UserEvent::UpdateChecked(Box::new(report)));
+            })
+            .is_err()
+        {
+            self.checking_update = false;
+            self.detail = "无法启动更新检查".into();
+            self.refresh(true);
+        }
+    }
+
+    fn show_update(&mut self, report: update::UpdateReport) {
+        self.checking_update = false;
+        self.newer_version = if report.newer { report.latest.clone() } else { None };
+        self.detail = report.summary.clone();
+        let _ = platform::log_status(&report.summary);
+        self.refresh(true);
+        if report.newer {
+            let message = format!("{}\n是否打开下载页面？", report.summary);
+            if platform::confirm("JLAU 校园网", &message)
+                && let Some(page) = report.page
+                && let Err(err) = platform::open_url(&page)
+            {
+                self.detail = format!("打开下载页面失败: {err}");
+                self.refresh(true);
+            }
+        } else {
+            platform::alert("JLAU 校园网", &report.summary);
         }
     }
 }
@@ -359,6 +425,7 @@ impl ApplicationHandler<UserEvent> for App {
                 self.refresh(false);
             }
             UserEvent::Menu(id) => self.handle_menu(&id),
+            UserEvent::UpdateChecked(report) => self.show_update(*report),
         }
     }
 
@@ -381,6 +448,19 @@ fn human_bytes(n: i64) -> String {
 // 无界面工具模式
 // ---------------------------------------------------------------------------
 fn cli_mode(args: &[String]) -> bool {
+    if args.iter().any(|arg| arg == "version") {
+        println!("{APP_VERSION}");
+        return true;
+    }
+    if args.iter().any(|arg| arg == "check-update") {
+        let report = update::check(APP_VERSION);
+        println!("{}", report.summary);
+        if let Some(page) = report.page {
+            println!("{page}");
+        }
+        return true;
+    }
+
     let (cfg, path) = Config::load_or_default();
     let client = SrunClient::new(&cfg.portal, &cfg.ac_id, 12);
 
@@ -549,7 +629,7 @@ fn main() {
     let (cmd_tx, cmd_rx) = mpsc::channel::<Command>();
     monitor::spawn(cfg.clone(), cfg_path.clone(), update_tx, cmd_rx);
 
-    let mut app = App::new(cfg, cfg_path, cmd_tx);
+    let mut app = App::new(cfg, cfg_path, cmd_tx, proxy);
     if let Err(e) = event_loop.run_app(&mut app) {
         eprintln!("事件循环异常: {e}");
     }

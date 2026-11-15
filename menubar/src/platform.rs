@@ -132,6 +132,123 @@ pub fn log_path() -> PathBuf {
     PathBuf::from("jlau-srun.log")
 }
 
+// ---------------------------------------------------------------------------
+// 打开链接、提示更新结果
+// ---------------------------------------------------------------------------
+pub fn open_url(url: &str) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        let status = Command::new("open").arg(url).status().map_err(|e| e.to_string())?;
+        if !status.success() {
+            return Err(format!("打开链接失败: {status}"));
+        }
+    }
+    #[cfg(target_os = "windows")]
+    {
+        Command::new("cmd")
+            .args(["/C", "start", "", url])
+            .spawn()
+            .map_err(|e| format!("打开链接失败: {e}"))?;
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        Command::new("xdg-open")
+            .arg(url)
+            .spawn()
+            .map_err(|e| format!("打开链接失败: {e}"))?;
+    }
+    Ok(())
+}
+
+pub fn alert(title: &str, message: &str) {
+    let _ = dialog(title, message, false);
+}
+
+/// 用户选择确认时返回 true。没有图形对话框时返回 false。
+pub fn confirm(title: &str, message: &str) -> bool {
+    dialog(title, message, true).unwrap_or(false)
+}
+
+fn dialog(title: &str, message: &str, ask: bool) -> Option<bool> {
+    #[cfg(target_os = "macos")]
+    {
+        return macos_dialog(title, message, ask);
+    }
+    #[cfg(target_os = "windows")]
+    {
+        return windows_dialog(title, message, ask);
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        return linux_dialog(title, message, ask);
+    }
+    #[allow(unreachable_code)]
+    {
+        let _ = (title, message, ask);
+        None
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn macos_dialog(title: &str, message: &str, ask: bool) -> Option<bool> {
+    let title = apple_escape(title);
+    let message = apple_escape(message);
+    let buttons = if ask {
+        "buttons {\"稍后\", \"前往下载\"} default button \"前往下载\""
+    } else {
+        "buttons {\"好\"} default button \"好\""
+    };
+    let script = format!("button returned of (display dialog \"{message}\" with title \"{title}\" {buttons})");
+    let out = Command::new("osascript").arg("-e").arg(script).output().ok()?;
+    if !out.status.success() {
+        return Some(false);
+    }
+    let text = String::from_utf8_lossy(&out.stdout);
+    Some(!ask || text.contains("前往下载"))
+}
+
+#[cfg(target_os = "macos")]
+fn apple_escape(text: &str) -> String {
+    text.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+#[cfg(target_os = "windows")]
+fn windows_dialog(title: &str, message: &str, ask: bool) -> Option<bool> {
+    let title = title.replace('\'', "''");
+    let message = message.replace('\'', "''");
+    let buttons = if ask { "YesNo" } else { "OK" };
+    let script = format!(
+        "Add-Type -AssemblyName System.Windows.Forms; \
+         $r=[System.Windows.Forms.MessageBox]::Show('{message}','{title}','{buttons}','Information'); \
+         if($r -eq 'Yes'){{'yes'}}else{{'no'}}"
+    );
+    let out = Command::new("powershell")
+        .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    Some(!ask || String::from_utf8_lossy(&out.stdout).contains("yes"))
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+fn linux_dialog(title: &str, message: &str, ask: bool) -> Option<bool> {
+    let kind = if ask { "--question" } else { "--info" };
+    match Command::new("zenity")
+        .args([kind, "--title", title, "--text", message])
+        .status()
+    {
+        Ok(status) => return Some(!ask || status.success()),
+        Err(_) => {}
+    }
+    let kind = if ask { "--yesno" } else { "--msgbox" };
+    match Command::new("kdialog").args(["--title", title, kind, message]).status() {
+        Ok(status) => Some(!ask || status.success()),
+        Err(_) => None,
+    }
+}
+
 /// 追加不含账号、密码或认证参数的运行状态。
 pub fn log_status(message: &str) -> std::io::Result<()> {
     use std::io::Write;
