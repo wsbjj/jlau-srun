@@ -7,7 +7,15 @@ DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$DIR"
 
 APP_NAME="JLAU校园网"
-VERSION="1.0"
+if [ -n "${APP_VERSION:-}" ]; then
+    VERSION="$APP_VERSION"
+else
+    VERSION="$(sed -n 's/^version = "\([^"]*\)".*/\1/p' "$DIR/Cargo.toml" | head -n 1)"
+fi
+if [ -z "$VERSION" ]; then
+    echo "无法确定版本号" >&2
+    exit 1
+fi
 APP="$DIR/dist/$APP_NAME.app"
 DMG="$DIR/dist/${APP_NAME}-${VERSION}.dmg"
 STAGE="$DIR/dist/.dmg-stage"

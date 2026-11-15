@@ -9,6 +9,16 @@ cd "$DIR"
 echo "==> 编译 release"
 cargo build --release
 
+if [ -n "${APP_VERSION:-}" ]; then
+    VERSION="$APP_VERSION"
+else
+    VERSION="$(sed -n 's/^version = "\([^"]*\)".*/\1/p' "$DIR/Cargo.toml" | head -n 1)"
+fi
+if [ -z "$VERSION" ]; then
+    echo "无法确定版本号" >&2
+    exit 1
+fi
+
 APP="$DIR/dist/JLAU校园网.app"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
@@ -23,7 +33,7 @@ if [ ! -f "$DIR/dist/AppIcon.icns" ]; then
 fi
 cp "$DIR/dist/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"
 
-cat > "$APP/Contents/Info.plist" <<'PLIST'
+cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -34,8 +44,8 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
     <key>CFBundleExecutable</key><string>jlau-srun-menubar</string>
     <key>CFBundleIconFile</key><string>AppIcon</string>
     <key>CFBundlePackageType</key><string>APPL</string>
-    <key>CFBundleVersion</key><string>1.0</string>
-    <key>CFBundleShortVersionString</key><string>1.0</string>
+    <key>CFBundleVersion</key><string>${VERSION}</string>
+    <key>CFBundleShortVersionString</key><string>${VERSION}</string>
     <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
     <key>LSMinimumSystemVersion</key><string>11.0</string>
     <key>LSUIElement</key><true/>

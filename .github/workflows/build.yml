@@ -84,6 +84,17 @@ jobs:
         with:
           workspaces: menubar
 
+      - name: 解析发布版本
+        shell: bash
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          if [ -z "$version" ] || [ "$version" = "$GITHUB_REF_NAME" ]; then
+            echo "无法从标签解析版本号: $GITHUB_REF_NAME" >&2
+            exit 1
+          fi
+          echo "APP_VERSION=$version" >> "$GITHUB_ENV"
+          echo "发布版本: $version"
+
       - name: Linux 系统依赖
         if: runner.os == 'Linux'
         run: |
@@ -116,7 +127,7 @@ jobs:
         run: |
           cargo build --release
           New-Item -ItemType Directory -Force -Path dist | Out-Null
-          Copy-Item target\release\jlau-srun-menubar.exe "dist\JLAU校园网-windows-x64.exe"
+          Copy-Item target\release\jlau-srun-menubar.exe "dist\JLAU校园网-$env:APP_VERSION-windows-x64.exe"
           Copy-Item ..\config.example.json "dist\config.example.json"
 
       # ---------------- Linux ----------------
@@ -129,7 +140,7 @@ jobs:
           cp target/release/jlau-srun-menubar dist/pkg/
           cp ../config.example.json dist/pkg/config.example.json
           cp README.md dist/pkg/README.md
-          tar -czf "dist/JLAU校园网-linux-x64.tar.gz" -C dist/pkg .
+          tar -czf "dist/JLAU校园网-${APP_VERSION}-linux-x64.tar.gz" -C dist/pkg .
           rm -rf dist/pkg
 
       # ---------------- 产物 ----------------
@@ -153,6 +164,23 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
+
+      - name: 清理同标签旧安装包
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          if ! gh release view "$tag" >/dev/null 2>&1; then
+            exit 0
+          fi
+          gh release view "$tag" --json assets --jq '.assets[].name' | while IFS= read -r name; do
+            [ -z "$name" ] && continue
+            case "$name" in
+              *.dmg|*.exe|*.tar.gz|config.example.json)
+                gh release delete-asset "$tag" "$name" --yes
+                ;;
+            esac
+          done
 
       - uses: softprops/action-gh-release@v2
         with:

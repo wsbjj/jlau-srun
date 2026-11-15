@@ -29,16 +29,17 @@ cargo clippy -- -D warnings
 ### 打包
 
 ```bash
-# macOS：生成 dist/JLAU校园网.app 与 dist/JLAU校园网-1.0.dmg
+# macOS：生成 dist/JLAU校园网.app 与 dist/JLAU校园网-<版本>.dmg
 bash deploy/make_dmg.sh
 
 # macOS：只生成 .app
 bash deploy/make_app.sh
 
-# Linux：手动打包（或直接用 CI 产物）
+# Linux：手动打包（或直接用 CI 产物）。文件名带 Cargo.toml 版本。
 cargo build --release
+version="$(sed -n 's/^version = "\([^"]*\)".*/\1/p' Cargo.toml | head -n 1)"
 mkdir -p pkg && cp target/release/jlau-srun-menubar pkg/
-tar -czf JLAU校园网-linux-x64.tar.gz -C pkg .
+tar -czf "JLAU校园网-${version}-linux-x64.tar.gz" -C pkg .
 ```
 
 Windows 用 `cargo build --release` 后取 `target\release\jlau-srun-menubar.exe`。
