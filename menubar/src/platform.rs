@@ -235,18 +235,17 @@ fn windows_dialog(title: &str, message: &str, ask: bool) -> Option<bool> {
 #[cfg(all(unix, not(target_os = "macos")))]
 fn linux_dialog(title: &str, message: &str, ask: bool) -> Option<bool> {
     let kind = if ask { "--question" } else { "--info" };
-    match Command::new("zenity")
+    if let Ok(status) = Command::new("zenity")
         .args([kind, "--title", title, "--text", message])
         .status()
     {
-        Ok(status) => return Some(!ask || status.success()),
-        Err(_) => {}
+        return Some(!ask || status.success());
     }
     let kind = if ask { "--yesno" } else { "--msgbox" };
-    match Command::new("kdialog").args(["--title", title, kind, message]).status() {
-        Ok(status) => Some(!ask || status.success()),
-        Err(_) => None,
+    if let Ok(status) = Command::new("kdialog").args(["--title", title, kind, message]).status() {
+        return Some(!ask || status.success());
     }
+    None
 }
 
 /// 追加不含账号、密码或认证参数的运行状态。
