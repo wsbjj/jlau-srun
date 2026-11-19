@@ -78,7 +78,7 @@ pub fn error_text(key: &str) -> String {
     zh.to_string()
 }
 
-fn urlencode(s: &str) -> String {
+pub(crate) fn urlencode(s: &str) -> String {
     let mut out = String::with_capacity(s.len() * 3);
     for b in s.as_bytes() {
         match b {

@@ -44,8 +44,10 @@
 | 获取挑战串 | GET | `/cgi-bin/get_challenge` | `username`, `ip`（可空）, `callback=cb` |
 | 登录 | GET | `/cgi-bin/srun_portal` | `action=login` + 13 个参数 |
 | 登出 | GET | `/cgi-bin/srun_portal` | `action=logout&ac_id=4&ip=<ip>&username=<可空>` |
-| 在线信息 | GET | `/cgi-bin/rad_user_info` | `callback=cb` |
+| 在线信息 | GET | `/cgi-bin/rad_user_info` | `callback=cb`；带 `user_ip=` 可查指定会话 |
 | 门户页 | GET | `/srun_portal_pc` | `ac_id=4&theme=wifi` |
+| 自助服务 SSO | GET | `:8800/site/sso` | `data=base64("zh-CN:<账号>:md5(<密码>)")` |
+| 在线设备列表 | GET | `:8800/home` | 登录 Cookie（`PHPSESSID_8800`），页面「在线信息」表格 |
 
 ### 1. 获取挑战串 (get_challenge)
 
@@ -110,6 +112,27 @@ cb({
   "...": "..."
 })
 ```
+
+### 3. 自助服务（`:8800`）SSO 与在线设备
+
+门户页右下角「自助服务」按钮不再走验证码登录，而是：
+
+```js
+base64.setAlpha('ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/');
+data = base64.encode('zh-CN:' + username + ':' + md5(password));
+window.open('http://<portal-host>:8800/site/sso?data=' + data);
+```
+
+`/site/sso` 校验通过后 302 到 `/home`，并下发新的 `PHPSESSID_8800`（响应里可能先带一个匿名会话，**取最后一个**）。
+首页「在线信息」表格就是该账号全部在线会话：
+
+| 用户名 | IP地址 | IPV6地址 | 上线时间 | 已用流量 | 已用时长 | MAC地址 | 登录类型 |
+|--------|--------|----------|----------|----------|----------|---------|----------|
+| 20261794 | 10.7.98.160 | :: | 2026-11-19 17:32:22 | 171.642G | 153时36分40秒 | C2-F6-2A-BE-71-91 | IPOE |
+| 20261794 | 10.7.224.192 | :: | 2026-11-19 19:19:47 | 171.642G | 153时36分40秒 | 06-D4-86-CE-38-B5 | IPOE |
+
+托盘应用的「在线设备（N 台）」子菜单就是按这个表渲染，`menubar/src/selfservice.rs` 负责 SSO、Cookie 和 HTML 解析。
+配置里的 `selfservice` 留空时按 `portal` 同主机 `:8800` 推导。
 
 ---
 

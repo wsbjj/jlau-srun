@@ -86,6 +86,37 @@ pub fn xencode(data: &str, key: &str) -> Vec<u8> {
     ints2bytes(&v)
 }
 
+/// 标准字母表 base64（自助服务平台 SSO 的 `data` 参数用这个）。
+pub fn base64_standard(data: &[u8]) -> String {
+    const ALPHA: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
+    for chunk in data.chunks(3) {
+        let n = ((chunk[0] as u32) << 16)
+            | ((*chunk.get(1).unwrap_or(&0) as u32) << 8)
+            | (*chunk.get(2).unwrap_or(&0) as u32);
+        out.push(ALPHA[((n >> 18) & 63) as usize] as char);
+        out.push(ALPHA[((n >> 12) & 63) as usize] as char);
+        out.push(if chunk.len() > 1 {
+            ALPHA[((n >> 6) & 63) as usize] as char
+        } else {
+            '='
+        });
+        out.push(if chunk.len() > 2 {
+            ALPHA[(n & 63) as usize] as char
+        } else {
+            '='
+        });
+    }
+    out
+}
+
+/// 明文 MD5（小写十六进制），自助服务 SSO 的密码摘要。
+pub fn md5_hex(input: &str) -> String {
+    let mut hasher = Md5::new();
+    hasher.update(input.as_bytes());
+    hex(&hasher.finalize())
+}
+
 /// 深澜自定义字母表 base64（仅换表，填充符仍是 `=`）。
 pub fn srun_base64(data: &[u8]) -> String {
     let mut out = String::with_capacity(data.len().div_ceil(3) * 4);

@@ -5,5 +5,6 @@
   "password": "keychain:jlau-srun",
   "interval": 30,
   "hmd5_mode": "hmac",
+  "selfservice": "http://202.198.1.80:8800",
   "auto_login": true
 }

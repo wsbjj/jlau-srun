@@ -35,6 +35,9 @@ pub struct Config {
     /// "hmac"（默认）或 "concat"
     #[serde(default)]
     pub hmd5_mode: String,
+    /// 自助服务平台地址；留空则由 `portal` 推导（同主机 :8800）
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub selfservice: String,
     #[serde(default = "default_true")]
     pub auto_login: bool,
 }
@@ -48,6 +51,16 @@ impl Default for Config {
 impl Config {
     pub fn compat_md5(&self) -> bool {
         self.hmd5_mode.eq_ignore_ascii_case("concat")
+    }
+
+    /// 自助服务平台（`/site/sso`、`/home`）的根地址。
+    pub fn self_service_base(&self) -> String {
+        let custom = self.selfservice.trim().trim_end_matches('/');
+        if custom.is_empty() {
+            crate::selfservice::base_url(&self.portal)
+        } else {
+            custom.to_string()
+        }
     }
 
     /// 依次尝试若干候选路径

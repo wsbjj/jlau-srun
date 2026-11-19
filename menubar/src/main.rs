@@ -10,6 +10,7 @@ mod config;
 mod crypt;
 mod monitor;
 mod platform;
+mod selfservice;
 mod srun;
 mod update;
 
@@ -27,6 +28,7 @@ use winit::window::WindowId;
 
 use config::Config;
 use monitor::{Command, Status, Update};
+use selfservice::Device;
 use srun::{internet_ok, OnlineInfo, SrunClient};
 
 const BADGE: &str = "校";
@@ -40,9 +42,13 @@ const ID_UPDATE: &str = "update";
 const ID_QUIT: &str = "quit";
 const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 const ID_TOGGLE_AUTO: &str = "toggle_auto";
+const ID_DEVICES_REFRESH: &str = "devices_refresh";
+const ID_SELF_SERVICE: &str = "self_service";
 const ID_INTERVAL_CUSTOM: &str = "interval_custom";
 const INTERVAL_PREFIX: &str = "interval_";
 const PRESETS: [u64; 5] = [10, 30, 60, 120, 300];
+/// 在线设备列表的自动刷新间隔
+const DEVICES_TTL: std::time::Duration = std::time::Duration::from_secs(300);
 
 // ---------------------------------------------------------------------------
 // 事件
@@ -53,6 +59,7 @@ enum UserEvent {
     Update(Box<Update>),
     Menu(String),
     UpdateChecked(Box<update::UpdateReport>),
+    Devices(Result<Vec<Device>, String>),
 }
 
 // ---------------------------------------------------------------------------
@@ -71,6 +78,12 @@ struct App {
     /// 已发现、比当前安装更新的版本号。
     newer_version: Option<String>,
     checking_update: bool,
+    /// 自助服务「在线信息」里的设备列表
+    devices: Option<Vec<Device>>,
+    devices_error: Option<String>,
+    /// 上次发起设备查询的时间，用来限流
+    devices_attempt: Option<Instant>,
+    fetching_devices: bool,
     /// 上次渲染的指纹，避免菜单无谓重建
     rendered: String,
 }
@@ -89,6 +102,10 @@ impl App {
             proxy,
             newer_version: None,
             checking_update: false,
+            devices: None,
+            devices_error: None,
+            devices_attempt: None,
+            fetching_devices: false,
             rendered: String::new(),
         }
     }
@@ -112,6 +129,36 @@ impl App {
 
     fn tooltip(&self) -> String {
         format!("JLAU 校园网 {APP_VERSION} · {}\n{}", self.status_line(), self.detail)
+    }
+
+    /// 「在线设备」子菜单：标题带台数，每行是 IP · 上线时间 · MAC。
+    fn build_devices_menu(&self) -> Submenu {
+        let title = match (&self.devices, &self.devices_error) {
+            (Some(list), _) => format!("在线设备（{} 台）", list.len()),
+            (None, Some(_)) => "在线设备（获取失败）".to_string(),
+            (None, None) => "在线设备（获取中…）".to_string(),
+        };
+        let submenu = Submenu::with_id("devices", title, true);
+        match &self.devices {
+            Some(list) if list.is_empty() => {
+                let _ = submenu.append(&MenuItem::new("当前没有在线设备", false, None));
+            }
+            Some(list) => {
+                for device in list {
+                    let _ = submenu.append(&MenuItem::new(device.summary(), false, None));
+                }
+            }
+            None => {
+                if let Some(err) = &self.devices_error {
+                    let _ = submenu.append(&MenuItem::new(format!("  {err}"), false, None));
+                }
+            }
+        }
+        let _ = submenu.append(&PredefinedMenuItem::separator());
+        let label = if self.fetching_devices { "正在刷新…" } else { "刷新设备" };
+        let refresh = MenuItem::with_id(ID_DEVICES_REFRESH, label, !self.fetching_devices, None);
+        let _ = submenu.append(&refresh);
+        submenu
     }
 
     fn build_menu(&self) -> Menu {
@@ -145,6 +192,8 @@ impl App {
                 }
             }
         }
+
+        let _ = menu.append(&self.build_devices_menu());
 
         let _ = menu.append(&PredefinedMenuItem::separator());
 
@@ -192,7 +241,9 @@ impl App {
         // ---- 其他 ----
         let cfg_item = MenuItem::with_id(ID_CONFIG, "打开配置文件", true, None);
         let log_item = MenuItem::with_id(ID_LOG, "打开日志", true, None);
+        let self_service = MenuItem::with_id(ID_SELF_SERVICE, "自助服务平台", true, None);
         let _ = menu.append(&PredefinedMenuItem::separator());
+        let _ = menu.append(&self_service);
         let _ = menu.append_items(&[&cfg_item, &log_item]);
 
         let _ = menu.append(&PredefinedMenuItem::separator());
@@ -213,8 +264,16 @@ impl App {
     }
 
     fn refresh(&mut self, force: bool) {
+        let devices_key = match &self.devices {
+            Some(list) => list
+                .iter()
+                .map(Device::summary)
+                .collect::<Vec<_>>()
+                .join(","),
+            None => format!("err:{}", self.devices_error.as_deref().unwrap_or("")),
+        };
         let fingerprint = format!(
-            "{:?}|{}|{}|{}|{}|{}|{}|{}",
+            "{:?}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
             self.status,
             self.detail,
             self.cfg.user,
@@ -222,6 +281,8 @@ impl App {
             self.cfg.auto_login,
             self.newer_version.as_deref().unwrap_or(""),
             self.checking_update,
+            self.fetching_devices,
+            devices_key,
             self.info
                 .as_ref()
                 .map(|i| format!("{}|{}|{}", i.online, i.sum_seconds, i.product))
@@ -237,6 +298,52 @@ impl App {
         tray.set_title(Some(BADGE));
         let _ = tray.set_tooltip(Some(self.tooltip()));
         tray.set_menu(Some(Box::new(self.build_menu())));
+    }
+
+    /// 查一次自助服务「在线信息」。`force=false` 时按 TTL 限流。
+    fn refresh_devices(&mut self, force: bool) {
+        if self.fetching_devices {
+            return;
+        }
+        if !force
+            && let Some(at) = self.devices_attempt
+            && at.elapsed() < DEVICES_TTL
+        {
+            return;
+        }
+        if self.cfg.user.is_empty() {
+            self.devices = None;
+            self.devices_error = Some("未配置账号".into());
+            self.devices_attempt = Some(Instant::now());
+            self.refresh(true);
+            return;
+        }
+        let Some(password) = self.cfg.resolve_password() else {
+            self.devices = None;
+            self.devices_error = Some("未配置密码".into());
+            self.devices_attempt = Some(Instant::now());
+            self.refresh(true);
+            return;
+        };
+
+        let base = self.cfg.self_service_base();
+        let user = self.cfg.user.clone();
+        let proxy = self.proxy.clone();
+        self.fetching_devices = true;
+        self.devices_attempt = Some(Instant::now());
+        self.refresh(true);
+
+        let spawned = std::thread::Builder::new()
+            .name("jlau-devices".into())
+            .spawn(move || {
+                let result = selfservice::fetch_devices(&base, &user, &password);
+                let _ = proxy.send_event(UserEvent::Devices(result));
+            });
+        if spawned.is_err() {
+            self.fetching_devices = false;
+            self.devices_error = Some("无法启动设备查询线程".into());
+            self.refresh(true);
+        }
     }
 
     fn persist(&mut self) -> Result<(), String> {
@@ -326,6 +433,22 @@ impl App {
                     self.refresh(true);
                 }
             }
+            ID_DEVICES_REFRESH => self.refresh_devices(true),
+            ID_SELF_SERVICE => {
+                let base = self.cfg.self_service_base();
+                // 带 SSO 参数打开浏览器，省掉一次验证码登录；没密码就退回首页
+                let url = match self.cfg.resolve_password() {
+                    Some(password) if !self.cfg.user.is_empty() => {
+                        selfservice::sso_url(&base, &self.cfg.user, &password)
+                    }
+                    _ => selfservice::home_url(&base),
+                };
+                match platform::open_url(&url) {
+                    Ok(()) => self.detail = "已在浏览器打开自助服务平台".into(),
+                    Err(e) => self.detail = format!("打开自助服务平台失败: {e}"),
+                }
+                self.refresh(true);
+            }
             ID_UPDATE => self.check_for_update(),
             ID_QUIT => {
                 let _ = self.cmd_tx.send(Command::Quit);
@@ -393,6 +516,7 @@ impl ApplicationHandler<UserEvent> for App {
                     self.tray = Some(tray);
                     self.refresh(true);
                     let _ = self.cmd_tx.send(Command::CheckNow);
+                    self.refresh_devices(true);
                 }
                 Err(e) => eprintln!("创建菜单栏图标失败: {e}"),
             }
@@ -423,6 +547,25 @@ impl ApplicationHandler<UserEvent> for App {
                 self.info = u.info;
                 self.last_check = u.checked_at;
                 self.refresh(false);
+                if matches!(self.status, Status::Online | Status::LoggedIn) {
+                    self.refresh_devices(false);
+                }
+            }
+            UserEvent::Devices(result) => {
+                self.fetching_devices = false;
+                match result {
+                    Ok(list) => {
+                        let _ = platform::log_status(&format!("在线设备 {} 台", list.len()));
+                        self.devices = Some(list);
+                        self.devices_error = None;
+                    }
+                    Err(e) => {
+                        let _ = platform::log_status(&format!("设备查询失败: {e}"));
+                        self.devices = None;
+                        self.devices_error = Some(e);
+                    }
+                }
+                self.refresh(true);
             }
             UserEvent::Menu(id) => self.handle_menu(&id),
             UserEvent::UpdateChecked(report) => self.show_update(*report),
@@ -495,6 +638,23 @@ fn cli_mode(args: &[String]) -> bool {
             } else {
                 println!("会话: 未登录");
             }
+        }
+        return true;
+    }
+
+    if args.iter().any(|a| a == "devices") {
+        let Some(pwd) = cfg.resolve_password() else {
+            eprintln!("取不到密码：config.json 的 password 为空，或钥匙串没有该条目");
+            return true;
+        };
+        match selfservice::fetch_devices(&cfg.self_service_base(), &cfg.user, &pwd) {
+            Ok(list) => {
+                println!("在线设备 {} 台", list.len());
+                for d in list {
+                    println!("{}  {}  {}", d.ip, d.mac, d.online_at);
+                }
+            }
+            Err(e) => println!("查询失败: {e}"),
         }
         return true;
     }
