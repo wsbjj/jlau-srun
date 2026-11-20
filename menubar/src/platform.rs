@@ -283,7 +283,7 @@ pub fn init_gui() -> Result<(), String> {
             Ok(()) => GTK_READY.store(true, std::sync::atomic::Ordering::Release),
             Err(e) => result = Err(format!("GTK 初始化失败: {e}")),
         });
-        return result;
+        result
     }
     #[cfg(not(target_os = "linux"))]
     Ok(())
