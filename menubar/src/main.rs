@@ -572,6 +572,20 @@ impl ApplicationHandler<UserEvent> for App {
         }
     }
 
+    /// winit 每轮事件循环都会经过这里。Linux 上没有独立的 GTK 主循环，
+    /// 托盘项注册和菜单点击都靠这里把 GTK/GDBus 事件派发出去，
+    /// 顺便把等待超时压到几十毫秒，避免空闲时长时间没人泵。
+    fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
+        platform::pump_gui();
+        #[cfg(target_os = "linux")]
+        {
+            const GTK_PUMP: std::time::Duration = std::time::Duration::from_millis(50);
+            _event_loop.set_control_flow(winit::event_loop::ControlFlow::WaitUntil(
+                Instant::now() + GTK_PUMP,
+            ));
+        }
+    }
+
     fn window_event(&mut self, _e: &ActiveEventLoop, _id: WindowId, _event: WindowEvent) {}
 }
 
@@ -757,6 +771,16 @@ fn main() {
         return;
     }
     let _ = platform::log_status("程序启动");
+
+    // Linux：muda / tray-icon 的 GTK 后端必须在建菜单前由主线程自己 init，
+    // 否则 resumed() 里 build_menu() 会 panic「GTK has not been initialized」。
+    if let Err(e) = platform::init_gui() {
+        eprintln!("{e}");
+        let _ = platform::log_status(&e);
+        // 没有可用的 GTK/显示时托盘必然建不起来，直接退出，
+        // 别让 muda 在 resumed() 里带着 panic 收场。
+        std::process::exit(1);
+    }
 
     let (cfg, cfg_path) = Config::load_or_default();
 

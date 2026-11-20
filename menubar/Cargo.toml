@@ -14,3 +14,10 @@ sha1 = "0.11.0"
 tray-icon = "0.26.1"
 ureq = { version = "3.5.2", default-features = false, features = ["gzip", "rustls"] }
 winit = "0.30.13"
+
+# Linux 上 muda / tray-icon 的菜单后端跑在 gtk-rs 上，建菜单时会走
+# `assert_initialized_main_thread!`，它只认 Rust 侧的 `gtk::init()` 标记，
+# 跟 C 库的 gtk_is_initialized() 无关，winit 的 X11 后端也不会替你调用。
+# 所以必须在主线程自己 init 一次，见 platform::init_gui()。
+[target.'cfg(target_os = "linux")'.dependencies]
+gtk = "0.18.2"

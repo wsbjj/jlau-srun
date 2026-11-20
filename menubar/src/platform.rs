@@ -262,6 +262,51 @@ pub fn log_status(message: &str) -> std::io::Result<()> {
 }
 
 // ---------------------------------------------------------------------------
+// GTK（Linux 托盘 / 菜单后端）
+// ---------------------------------------------------------------------------
+// muda 与 tray-icon 在 Linux 上建菜单走 gtk-rs，`assert_initialized_main_thread!`
+// 检查的是 gtk-rs 自己的 INITIALIZED 原子量和主线程 thread-local，只有 Rust 侧的
+// `gtk::init()` 会设置它们。winit 0.30 的 X11 后端不调用它，LD_PRELOAD 里调 C 的
+// gtk_init() 也绕不过去，因此这里在创建任何菜单之前显式初始化一次。
+
+#[cfg(target_os = "linux")]
+static GTK_READY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// 初始化 GTK。必须在主线程、创建菜单/托盘之前调用；重复调用直接返回 Ok。
+pub fn init_gui() -> Result<(), String> {
+    #[cfg(target_os = "linux")]
+    {
+        use std::sync::Once;
+        static ONCE: Once = Once::new();
+        let mut result = Ok(());
+        ONCE.call_once(|| match gtk::init() {
+            Ok(()) => GTK_READY.store(true, std::sync::atomic::Ordering::Release),
+            Err(e) => result = Err(format!("GTK 初始化失败: {e}")),
+        });
+        return result;
+    }
+    #[cfg(not(target_os = "linux"))]
+    Ok(())
+}
+
+/// 派发一遍 GTK 主上下文里已排队的事件。
+///
+/// Linux 上没有单独的 GTK 主循环线程：libappindicator 通过 DBus 注册托盘项、
+/// 菜单项的 activate 信号，全靠默认 GMainContext 被迭代才会走到，
+/// 所以由 winit 的 `about_to_wait` 定时调用这里，否则托盘图标不出现、菜单点了没反应。
+pub fn pump_gui() {
+    #[cfg(target_os = "linux")]
+    {
+        if !GTK_READY.load(std::sync::atomic::Ordering::Acquire) {
+            return;
+        }
+        while gtk::events_pending() {
+            gtk::main_iteration_do(false);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // 凭据（"keychain:服务名" 语法）
 // ---------------------------------------------------------------------------
 #[cfg(target_os = "macos")]
