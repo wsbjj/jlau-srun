@@ -1,3 +1,11 @@
+## v1.0.5 (2026-11-20)
+
+### 修复
+
+- **Linux 托盘**：官方 Linux 包启动即 panic `GTK has not been initialized. Call gtk::init first.`（`gtk-0.18.2/src/auto/menu.rs:29`）。GTK 后端现在只在 Linux 上显式依赖 `gtk`，并在主线程、建菜单之前调用 `gtk::init()`；winit 的 X11 事件循环里同时泵 GTK 主上下文，托盘项注册和菜单点击才能生效
+
+---
+
 ## v1.0.4 (2026-11-19)
 
 ### 新增
